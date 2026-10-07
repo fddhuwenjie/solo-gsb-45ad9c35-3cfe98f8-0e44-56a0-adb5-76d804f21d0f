@@ -120,6 +120,25 @@
       <div id="done-message"></div>
     </div>
 
+    <div class="card hidden" id="ops-restore">
+      <h2>⑤ 施工结束：恢复通道 / 拆除新牌</h2>
+      <p class="hint">每次选择<strong>一条已封通道</strong>开放，并可勾选本次要拆除的
+        <strong>零块或多块已安装新牌</strong>。系统按恢复后的现场重新走查所有入口；
+        若出现断路 / 缺牌 / 循环，会指出首个出错路口，<strong>本次开放与拆牌均不生效</strong>。
+        成功后仅更新所选通道与所拆新牌，其余封路与牌保持原状，可继续下一次操作。</p>
+
+      <h3>本次开放的已封通道（必选一条）</h3>
+      <form id="form-restore">
+        <select name="corridor_id" required></select>
+        <h3 class="with-top">本次同时拆除的新牌（可多选，也可不拆）</h3>
+        <div id="restore-boards" class="checklist"></div>
+        <p id="restore-final-hint" class="hint hidden"></p>
+        <div class="btn-row">
+          <button type="submit" class="primary">按选择开放通道并拆牌（先全量走查）</button>
+        </div>
+      </form>
+    </div>
+
     <div class="card">
       <h2>作业控制</h2>
       <div class="btn-row">

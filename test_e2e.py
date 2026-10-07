@@ -254,6 +254,145 @@ out = req("POST", "/api/plan/start", expect=400)
 check("缺牌" in out["error"], "初始缺牌时禁止开始安装")
 req("POST", "/api/reset")
 
+print("== 10a. 单条已封通道恢复：校验 + 最后一条必须拆完 + 走查回 setup ==")
+req("POST", "/api/reset")
+# reset 保留已登记路口；清空前面各段登记的路口（级联删除其通道/牌），以便重新载入示例
+for nd in req("GET", "/api/state")["nodes"]:
+    req("DELETE", f"/api/nodes/{nd['id']}")
+req("POST", "/api/seed")
+a_item = next(p["id"] for p in req("GET", "/api/state")["plan_items"]
+              if p["node_name"] == "A展厅")
+b_item = next(p["id"] for p in req("GET", "/api/state")["plan_items"]
+              if p["node_name"] == "B展厅")
+req("POST", "/api/plan/start")
+# 安装阶段恢复接口锁定
+req("POST", "/api/restore", {"corridor_id": 5}, 409)
+req("POST", f"/api/install/{a_item}")
+req("POST", f"/api/install/{b_item}")
+req("POST", "/api/close")
+stc = req("GET", "/api/state")
+check(stc["stage"] == "closed", "封路完成进入 closed")
+new_a = next(b["id"] for b in stc["boards"] if b["kind"] == "new" and b["node_name"] == "A展厅")
+new_b = next(b["id"] for b in stc["boards"] if b["kind"] == "new" and b["node_name"] == "B展厅")
+old_bid = next(b["id"] for b in stc["boards"] if b["kind"] == "old")
+
+# 非法入参
+req("POST", "/api/restore", {}, 400)
+req("POST", "/api/restore", {"corridor_id": 99999}, 400)          # 通道不存在
+req("POST", "/api/restore", {"corridor_id": 1}, 400)              # 通道开放中
+req("POST", "/api/restore", {"corridor_id": 5, "board_ids": [old_bid]}, 400)  # 拆旧牌
+req("POST", "/api/restore", {"corridor_id": 5, "board_ids": [99999]}, 400)   # 牌不存在
+# 最后一条已封通道：必须拆完全部新牌（只拆一块 -> 400，状态不变）
+out = req("POST", "/api/restore", {"corridor_id": 5, "board_ids": [new_a]}, 400)
+check("最后一条" in out["error"], "最后一条通道未拆完新牌被拒绝")
+stx = req("GET", "/api/state")
+check(stx["stage"] == "closed", "拒绝后仍为 closed")
+check(next(c for c in stx["corridors"] if c["id"] == 5)["status"] == "closed",
+      "拒绝后通道仍封闭")
+check(len([b for b in stx["boards"] if b["kind"] == "new"]) == 2, "拒绝后新牌都还在")
+
+# 一次拆完两块、开放通道 -> 走查通过 -> setup
+out = req("POST", "/api/restore", {"corridor_id": 5, "board_ids": [new_a, new_b]})
+check(out["final"] is True, "返回 final=true")
+stf = req("GET", "/api/state")
+check(stf["stage"] == "setup", "全部恢复后回到布展登记")
+check(all(c["status"] == "open" for c in stf["corridors"]), "通道全部开放")
+check(all(b["kind"] == "old" for b in stf["boards"]), "新牌全部拆完，旧牌保留")
+check(not stf["plan_items"] and not stf["closure_plan"], "本次方案（清单/方案）已清空")
+check(stf["live_check"]["ok"], "恢复后现场走查全部入口通过")
+
+print("== 10b. 多条已封通道逐次恢复：失败回滚 + 仅更新所选通道/牌 ==")
+req("POST", "/api/reset")
+# 上一段（示例馆区）登记的路口仍保留，全部清掉以便搭建新场景
+for nd in req("GET", "/api/state")["nodes"]:
+    req("DELETE", f"/api/nodes/{nd['id']}")
+rn = lambda name: req("POST", "/api/nodes", {"name": name, "kind":
+      "entrance" if name == "rE" else ("service" if name == "rS" else "hall")})["id"]
+re_, rx, ry, rz, rs = rn("rE"), rn("rX"), rn("rY"), rn("rZ"), rn("rS")
+def rc(x, y): return req("POST", "/api/corridors", {"a_id": x, "b_id": y})["id"]
+c_ex, c_xy, c_yz, c_zs, c_ey = rc(re_, rx), rc(rx, ry), rc(ry, rz), rc(rz, rs), rc(re_, ry)
+for x, y in [(re_, rx), (rx, ry), (ry, rz), (rz, rs)]:
+    req("POST", "/api/boards", {"node_id": x, "points_to": y})
+check(req("GET", "/api/state")["live_check"]["ok"], "新场景初始导向正确（含示例馆区入口）")
+# 封 rE-rX 与 rX-rY：rE 改指 rY；另在 rZ 装一块指向相同的新牌（第二块新牌）
+req("POST", "/api/plan/closures", {"corridor_id": c_ex})
+req("POST", "/api/plan/closures", {"corridor_id": c_xy})
+pi_ey = req("POST", "/api/plan/items", {"node_id": re_, "points_to": ry})["id"]
+pi_zs = req("POST", "/api/plan/items", {"node_id": rz, "points_to": rs})["id"]
+req("POST", "/api/plan/start")
+req("POST", f"/api/install/{pi_ey}")
+req("POST", f"/api/install/{pi_zs}")
+check(req("GET", "/api/state")["sim_check"]["ok"], "封两条通道的预演通过")
+req("POST", "/api/close")
+stc = req("GET", "/api/state")
+nb_ey = next(b["id"] for b in stc["boards"] if b["kind"] == "new" and b["node_id"] == re_)
+nb_zs = next(b["id"] for b in stc["boards"] if b["kind"] == "new" and b["node_id"] == rz)
+
+# 开放 rX-rY 并拆掉 rE→rY：rE-rX 仍封，rE 旧牌跨过封通道 -> 断路，整块回滚
+out = req("POST", "/api/restore",
+          {"corridor_id": c_xy, "board_ids": [nb_ey]}, expect=422)
+check(out["rejected"] and out["error"]["type"] == "break",
+      "恢复后断路：报断路且不生效")
+check(out["error"]["junction_name"] == "rE", "首个出错路口=rE")
+stk = req("GET", "/api/state")
+check(stk["stage"] == "closed", "回滚后仍 closed")
+check(next(c for c in stk["corridors"] if c["id"] == c_xy)["status"] == "closed"
+      and next(c for c in stk["corridors"] if c["id"] == c_ex)["status"] == "closed",
+      "回滚：两条通道仍封闭")
+check(len([b for b in stk["boards"] if b["kind"] == "new"]) == 2, "回滚：两块新牌都还在")
+check(len(stk["closure_plan"]) == 2, "回滚：封路清单仍有两条")
+check(all(p["installed"] for p in stk["plan_items"]), "回滚：方案项仍为已安装")
+
+# 先开放 rE-rX（非最后一条），不拆牌：rE 新牌→rY→rZ→rS 可走
+out = req("POST", "/api/restore", {"corridor_id": c_ex, "board_ids": []})
+check(out["final"] is False, "非最后一条：final=false")
+stp = req("GET", "/api/state")
+check(stp["stage"] == "closed", "非最后恢复后仍处 closed，可继续操作")
+check(next(c for c in stp["corridors"] if c["id"] == c_ex)["status"] == "open"
+      and next(c for c in stp["corridors"] if c["id"] == c_xy)["status"] == "closed",
+      "仅所选通道开放，另一条仍封闭")
+check(len([b for b in stp["boards"] if b["kind"] == "new"]) == 2, "未选新牌保持原状")
+check([c["corridor_id"] for c in stp["closure_plan"]] == [c_xy],
+      "仅从封路清单移除所选通道")
+check(len(stp["plan_items"]) == 2 and all(p["installed"] for p in stp["plan_items"]),
+      "换牌方案记录保持原状")
+check(stp["live_check"]["ok"], "恢复后现场走查通过")
+
+# 最后一条 rX-rY：只拆一块仍不行（还剩一块）
+out = req("POST", "/api/restore",
+          {"corridor_id": c_xy, "board_ids": [nb_ey]}, 400)
+check("最后一条" in out["error"] and "1" in out["error"], "提示剩 1 块必须拆完")
+# 两块一起拆、开放最后一条 -> setup
+out = req("POST", "/api/restore",
+          {"corridor_id": c_xy, "board_ids": [nb_ey, nb_zs]})
+check(out["final"] is True, "最后一条 final=true")
+stl = req("GET", "/api/state")
+check(stl["stage"] == "setup", "全部恢复回到 setup")
+check(all(c["status"] == "open" for c in stl["corridors"]), "通道全部开放")
+check(all(b["kind"] == "old" for b in stl["boards"]), "新牌清空、旧牌保留")
+check(not stl["plan_items"] and not stl["closure_plan"], "方案与清单已清空")
+check(stl["live_check"]["ok"], "旧牌导向恢复正常")
+
+print("== 10c. 无新牌的最终恢复；封路失败阶段恢复被锁定 ==")
+req("POST", "/api/reset")
+# 仅封旁路 rE-rY（无换牌项）：预演与封路均成立
+req("POST", "/api/plan/closures", {"corridor_id": c_ey})
+req("POST", "/api/plan/start")
+req("POST", "/api/close")
+out = req("POST", "/api/restore", {"corridor_id": c_ey, "board_ids": []})
+check(out["final"] and req("GET", "/api/state")["stage"] == "setup",
+      "无剩余新牌：最后一条通道可直接恢复并回 setup")
+# 封路失败阶段恢复锁定（封 rE-rX 不换牌 -> 封路核对断路 -> failed）
+req("POST", "/api/reset")
+req("POST", "/api/plan/closures", {"corridor_id": c_ex})
+req("POST", "/api/plan/start")
+req("POST", "/api/close", expect=422)
+check(req("GET", "/api/state")["stage"] == "failed", "构造 failed 状态")
+req("POST", "/api/restore", {"corridor_id": c_ex}, 409)
+# setup 阶段同样不可用
+req("POST", "/api/reset")
+req("POST", "/api/restore", {"corridor_id": c_ex}, 409)
+
 server.shutdown()
 print(f"\n总计：通过 {PASS}，失败 {FAIL}")
 sys.exit(1 if FAIL else 0)

@@ -54,7 +54,7 @@ const code = fs.readFileSync("static/app.js", "utf8");
 const patched = code.replace(
   /document\.addEventListener\("DOMContentLoaded"[\s\S]*?\}\);\s*$/,
   ""
-) + "\nglobalThis.__api = { renderStage, renderForms, renderLists, renderMap, renderCheck, set state(v){state=v}, get state(){return state} };";
+) + "\nglobalThis.__api = { renderStage, renderForms, renderLists, renderMap, renderCheck, renderRestore, set state(v){state=v}, get state(){return state} };";
 const runGlobal = (0, eval);
 runGlobal(patched);
 const R = globalThis.__api;
@@ -111,14 +111,19 @@ for (const stage of ["setup", "planning", "installing", "closed", "failed"]) {
     R.renderStage();
     R.renderForms();
     R.renderLists();
+    R.renderRestore();
     R.renderMap();
     R.renderCheck("#live-box", R.state.live_check);
     R.renderCheck("#sim-box", R.state.sim_check);
-    ok(true, "五个渲染函数无异常");
+    ok(true, "六个渲染函数无异常");
     // 只有安装阶段显示安装面板
     const installCard = document.querySelector("#ops-install");
     ok(installCard.classList.contains("hidden") === (stage !== "installing"),
       "安装面板显隐正确");
+    // 恢复面板仅在已封路阶段显示
+    const restoreCard = document.querySelector("#ops-restore");
+    ok(restoreCard.classList.contains("hidden") === (stage !== "closed"),
+      "恢复面板显隐正确");
     // 封路按钮只在安装阶段可点
     ok(document.querySelector("#btn-close").disabled === (stage !== "installing"),
       "封路按钮可用性正确");
@@ -128,6 +133,16 @@ for (const stage of ["setup", "planning", "installing", "closed", "failed"]) {
     if (stage === "installing") {
       ok(btns.length === 2 && btns[0].disabled && !btns[1].disabled,
         "已装项禁用、待装项可点");
+    }
+    // 已封路阶段：可恢复通道下拉与可拆新牌清单已渲染，最后一条提示出现
+    if (stage === "closed") {
+      const sel = document.querySelector("#form-restore [name=corridor_id]");
+      ok(sel.children.length === 1, "恢复面板列出 1 条可恢复的已封通道");
+      const checklist = document.querySelector("#restore-boards");
+      ok(checklist.children.length === 1, "恢复面板列出 1 块可拆新牌");
+      const hint = document.querySelector("#restore-final-hint");
+      ok(!hint.classList.contains("hidden") && hint.textContent.includes("最后一条"),
+        "提示最后一条必须拆完全部新牌");
     }
   } catch (e) {
     ok(false, "渲染抛错：" + e.stack);
@@ -154,7 +169,7 @@ R.state = { stage: "setup", stage_error: null, nodes: [], corridors: [], boards:
   live_check: { ok: true, error: null, entrances: [] },
   sim_check: { ok: true, error: null, entrances: [] } };
 try {
-  R.renderStage(); R.renderForms(); R.renderLists(); R.renderMap();
+  R.renderStage(); R.renderForms(); R.renderLists(); R.renderRestore(); R.renderMap();
   R.renderCheck("#live-box", R.state.live_check); R.renderCheck("#sim-box", R.state.sim_check);
   ok(true, "空数据渲染无异常");
 } catch (e) {

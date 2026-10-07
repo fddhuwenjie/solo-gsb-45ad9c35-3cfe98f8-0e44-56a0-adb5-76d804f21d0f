@@ -96,6 +96,18 @@ button:disabled { background: #9aa5b1 !important; cursor: not-allowed; }
 .install-btn { padding: 6px 12px; border: 1px solid #8a4baf; background: #f3e8fb; color: #6b2d8f; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .install-btn.done { background: #e6f6ec; border-color: #2f9e44; color: #24703b; }
 
+#form-restore select { width: 100%; margin-bottom: 4px; }
+h3.with-top { margin-top: 12px; }
+.checklist { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 8px; }
+.check-item {
+  display: flex; align-items: center; gap: 8px; font-size: 13px;
+  padding: 5px 9px; border: 1px solid #d9dee5; border-radius: 6px; background: #fbfcfe;
+  cursor: pointer;
+}
+.check-item:hover { background: #f1f6fc; }
+.check-item input { margin: 0; }
+#restore-final-hint { margin: 6px 0; }
+
 .check-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 700px) { .check-row { grid-template-columns: 1fr; } .gridform { grid-template-columns: 1fr; } }
 .check-box { border: 1px solid #dde3ea; border-radius: 8px; padding: 8px 10px; }

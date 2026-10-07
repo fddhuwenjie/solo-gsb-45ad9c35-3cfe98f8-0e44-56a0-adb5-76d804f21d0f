@@ -320,7 +320,9 @@ function renderLists() {
   // 完成信息
   const done = $("#done-message");
   if (state.stage === "closed") {
-    done.innerHTML = `<div class="big-ok">✔ 通道已封闭，所有入口仍可沿实物箭头到达服务台，作业完成。</div>`;
+    done.innerHTML = `<div class="big-ok">✔ 通道已封闭，所有入口仍可沿实物箭头到达服务台。</div>
+      <p class="hint">施工结束后，请在下方「恢复通道 / 拆除新牌」面板逐次恢复，
+        全部恢复后自动回到布展登记。</p>`;
   } else if (state.stage === "failed") {
     done.innerHTML = `<div class="big-fail">✘ ${escapeHtml(state.stage_error || "封路失败")}</div>
       <p class="hint">已安装的新牌与仍开放的通道均已保留；上方分别展示方案、实物牌与通道状态。可重置后重新规划。</p>`;
@@ -336,7 +338,7 @@ function renderStage() {
     setup: "登记路口、通道与原有旧牌；全部入口须已能沿旧牌走到服务台。",
     planning: "勾选待封通道、拟定换牌新牌；方案随时可改，开始安装后锁定。",
     installing: "清单与方案已锁定，只能逐块安装；每次安装后自动全量核对。",
-    closed: "封路完成，导向正常。",
+    closed: "封路完成，导向正常；施工结束后可逐次开放通道、拆除新牌。",
     failed: "封路失败：新牌与开放通道已保留，作业终止。",
   };
   $("#stage-hint").textContent = hints[s];
@@ -345,6 +347,7 @@ function renderStage() {
   $("#ops-plan").classList.toggle("hidden", s !== "planning");
   $("#ops-install").classList.toggle("hidden", s !== "installing");
   $("#ops-done").classList.toggle("hidden", s !== "closed" && s !== "failed");
+  $("#ops-restore").classList.toggle("hidden", s !== "closed");
   $("#btn-seed").disabled = s !== "setup";
   $("#btn-close").disabled = s !== "installing";
 
@@ -393,12 +396,51 @@ function refreshItemTargets() {
   fillSelect(sel, ns, (n) => `${KIND_CN[n.kind]}｜${n.name}`, true);
 }
 
+// ------------------------------------------------------------------ 恢复（已封路）
+function renderRestore() {
+  const sel = $("#form-restore [name=corridor_id]");
+  const closed = state.corridors.filter((c) => c.status === "closed");
+  fillSelect(sel, closed, corridorLabel, closed.length > 1);
+
+  const box = $("#restore-boards");
+  box.innerHTML = "";
+  const newBoards = state.boards.filter((b) => b.kind === "new");
+  for (const b of newBoards) {
+    const label = document.createElement("label");
+    label.className = "check-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = b.id;
+    label.appendChild(cb);
+    const span = document.createElement("span");
+    span.textContent = `${b.node_name} → ${b.points_to_name}`;
+    label.appendChild(span);
+    box.appendChild(label);
+  }
+  if (!newBoards.length) {
+    box.innerHTML = `<span style="color:#8493a5;font-size:13px">（已无新牌可拆）</span>`;
+  }
+
+  const hint = $("#restore-final-hint");
+  if (closed.length <= 1) {
+    const n = newBoards.length;
+    hint.textContent = n
+      ? `这是最后一条待恢复的已封通道：提交时必须勾选拆完全部 ${n} 块新牌。`
+      : "这是最后一条待恢复的已封通道，已无新牌：走查通过后将清空本次方案，回到布展登记。";
+    hint.classList.remove("hidden");
+  } else {
+    hint.textContent = `当前还有 ${closed.length} 条已封通道；本次恢复后可继续选择下一条。`;
+    hint.classList.remove("hidden");
+  }
+}
+
 // ------------------------------------------------------------------ 主刷新
 async function refresh() {
   state = await api("/api/state");
   renderStage();
   renderForms();
   renderLists();
+  renderRestore();
   renderMap();
   renderCheck("#live-box", state.live_check);
   renderCheck("#sim-box", state.sim_check);
@@ -467,6 +509,32 @@ document.addEventListener("DOMContentLoaded", () => {
       refresh();
     } catch (e) { toast(e.message, "error"); }
   };
+
+  $("#form-restore").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const corridor_id = parseInt(f.corridor_id.value, 10);
+    const board_ids = [...f.querySelectorAll('#restore-boards input[type=checkbox]:checked')]
+      .map((cb) => parseInt(cb.value, 10));
+    if (!corridor_id) {
+      toast("请先选择一条要开放的已封通道", "error");
+      return;
+    }
+    try {
+      const out = await api("/api/restore", {
+        method: "POST",
+        body: { corridor_id, board_ids },
+      });
+      toast(out.final
+        ? "✔ 最后一条通道已开放、新牌全部拆完，方案已清空，回到布展登记"
+        : `✔ 通道已开放，拆除 ${board_ids.length} 块新牌，现场走查通过；可继续恢复下一条`,
+        "success");
+      refresh();
+    } catch (e) {
+      toast(e.message, "error");
+      refresh();
+    }
+  });
 
   refresh().catch((e) => toast("加载失败：" + e.message, "error"));
 });

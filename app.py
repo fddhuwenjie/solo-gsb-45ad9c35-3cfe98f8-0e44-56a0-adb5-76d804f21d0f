@@ -212,7 +212,7 @@ def lock_error(stage):
         "setup": "尚未进入方案阶段，请先确认初始导向正确后「拟定方案」。",
         "planning": "方案尚未开始安装。",
         "installing": "安装已开始：封路清单与换牌方案已锁定，不能再改动。",
-        "closed": "通道已封闭，作业已结束（可重置后重新规划）。",
+        "closed": "通道已封闭：请在「已封路」页面逐次开放通道、拆除新牌，或重置后重新规划。",
         "failed": "封路失败，本次作业已终止：只能查看或重置。",
     }[stage]
 
@@ -588,6 +588,110 @@ def close_corridors():
     set_stage(db, "closed")
     db.commit()
     return jsonify({"ok": True})
+
+
+@app.route("/api/restore", methods=["POST"])
+def restore_one():
+    """施工结束后的恢复作业：开放一条已封通道，并拆除零块或多块已安装新牌。
+
+    - 仅「已封路」阶段可用；逐次选择一条已封通道。
+    - 先按「该通道开放 + 选中牌拆除」后的现场状态走查所有入口；
+      出现断路 / 缺牌 / 循环时指出首个出错路口，本次开放与拆牌整块不生效。
+    - 成功后仅更新所选通道、被拆实物新牌、对应封路清单与换牌方案记录，
+      其余封路与牌保持原状。
+    - 恢复的是最后一条已封通道时，必须同时拆完剩余全部新牌；
+      走查通过后清空本次方案（清单/方案/新牌、通道全开），回到布展登记。
+    """
+    db = get_db()
+    st = get_stage(db)
+    if st["stage"] != "closed":
+        return bad(lock_error(st["stage"]), 409)
+    d = request.get_json(force=True) or {}
+    try:
+        cid = int(d["corridor_id"])
+        board_ids = {int(x) for x in (d.get("board_ids") or [])}
+    except (KeyError, TypeError, ValueError):
+        return bad("请选择本次要开放的通道（board_ids 为被拆新牌编号列表）")
+
+    corridor = db.execute(
+        "SELECT * FROM corridor WHERE id=?", (cid,)
+    ).fetchone()
+    if not corridor:
+        return bad("通道不存在")
+    if corridor["status"] != "closed":
+        return bad("只能选择已封闭的通道开放")
+    if board_ids:
+        qmarks = ",".join("?" * len(board_ids))
+        rows = db.execute(
+            f"SELECT id, node_id, points_to FROM board WHERE id IN ({qmarks}) AND kind='new'",
+            tuple(board_ids),
+        ).fetchall()
+        if len(rows) != len(board_ids):
+            return bad("只能拆除本次已安装的新牌（旧牌或不存在的牌不能拆）")
+    else:
+        rows = []
+
+    other_closed = {
+        r["id"]
+        for r in db.execute("SELECT id FROM corridor WHERE status='closed' AND id<>?", (cid,))
+    }
+    final = not other_closed  # 本次开放的是最后一条已封通道
+    if final:
+        if board_ids:
+            qmarks = ",".join("?" * len(board_ids))
+            remain = db.execute(
+                f"SELECT COUNT(*) c FROM board WHERE kind='new' AND id NOT IN ({qmarks})",
+                tuple(board_ids),
+            ).fetchone()["c"]
+        else:
+            remain = db.execute(
+                "SELECT COUNT(*) c FROM board WHERE kind='new'"
+            ).fetchone()["c"]
+        if remain:
+            return bad(
+                f"这是最后一条待恢复的已封通道，必须同时拆完剩余全部 {remain} 块新牌"
+            )
+
+    # 先落库再走查，失败整块回滚：本次开放与拆牌都不生效
+    try:
+        db.execute("UPDATE corridor SET status='open' WHERE id=?", (cid,))
+        if board_ids:
+            qmarks = ",".join("?" * len(board_ids))
+            db.execute(f"DELETE FROM board WHERE id IN ({qmarks}) AND kind='new'",
+                       tuple(board_ids))
+            for r in rows:
+                # 同步删除对应的换牌方案记录（按路口与新箭头指向精确匹配）
+                db.execute(
+                    "DELETE FROM plan_item WHERE installed=1 AND node_id=? AND points_to=?",
+                    (r["node_id"], r["points_to"]),
+                )
+        db.execute("DELETE FROM closure_plan WHERE corridor_id=?", (cid,))
+
+        chk = walk_check(db, set())
+        if not chk["ok"]:
+            db.rollback()
+            e = chk["error"]
+            return jsonify({
+                "ok": False,
+                "rejected": True,
+                "final": final,
+                "error": e,
+                "message": f"本次开放与拆牌不生效：{e['detail']}（路径："
+                           + " → ".join(node_name(db, x) for x in e["trail"]) + "）",
+            }), 422
+
+        if final:
+            # 全部通道恢复：清空本次方案，回到布展登记（保留展厅、通道与旧牌）
+            db.execute("DELETE FROM plan_item")
+            db.execute("DELETE FROM closure_plan")
+            db.execute("DELETE FROM board WHERE kind='new'")
+            db.execute("UPDATE corridor SET status='open'")
+            set_stage(db, "setup")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return jsonify({"ok": True, "final": final})
 
 
 @app.route("/api/reset", methods=["POST"])
