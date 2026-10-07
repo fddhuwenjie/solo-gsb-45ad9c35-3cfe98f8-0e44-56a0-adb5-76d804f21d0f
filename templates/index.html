@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>展馆临时封路导向牌工作台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>展馆临时封路导向牌工作台</h1>
+  <div id="stage-bar">
+    <span class="stage-label">作业阶段：</span>
+    <span id="stage-badge" class="badge">—</span>
+    <span id="stage-hint"></span>
+  </div>
+</header>
+
+<main>
+  <!-- 左栏：图示与核对 -->
+  <section class="col">
+    <div class="card">
+      <h2>馆区示意图</h2>
+      <svg id="map" viewBox="0 0 880 460" role="img" aria-label="馆区导向示意图"></svg>
+      <p class="legend">
+        <span class="dot hall"></span>展厅
+        <span class="dot entrance"></span>入口
+        <span class="dot service"></span>服务台
+        ｜ 实线：开放通道　虚线：已封闭　绿色箭头：新牌生效　灰色箭头：旧牌
+      </p>
+    </div>
+
+    <div class="card" id="check-card">
+      <h2>导向核对</h2>
+      <div class="check-row">
+        <div class="check-box" id="live-box">
+          <h3>现场（按实物牌 + 通道现状）</h3>
+          <div class="check-result"></div>
+        </div>
+        <div class="check-box" id="sim-box">
+          <h3>封路预演（模拟清单通道封闭）</h3>
+          <div class="check-result"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 右栏：操作 -->
+  <section class="col">
+    <div class="card" id="ops-setup">
+      <h2>① 登记展厅 / 通道 / 入口 / 服务台 / 旧箭头牌</h2>
+      <div class="btn-row">
+        <button id="btn-seed" class="secondary">载入示例馆区</button>
+      </div>
+
+      <h3>路口（展厅 / 入口 / 服务台）</h3>
+      <form id="form-node" class="gridform">
+        <input name="name" placeholder="名称，如 A展厅 / 入口1 / 服务台" required>
+        <select name="kind">
+          <option value="hall">展厅</option>
+          <option value="entrance">入口</option>
+          <option value="service">服务台</option>
+        </select>
+        <button type="submit">登记路口</button>
+      </form>
+      <ul id="list-nodes" class="plist"></ul>
+
+      <h3>双向通道</h3>
+      <form id="form-corridor" class="gridform">
+        <select name="a_id" required></select>
+        <select name="b_id" required></select>
+        <button type="submit">登记通道</button>
+      </form>
+      <ul id="list-corridors" class="plist"></ul>
+
+      <h3>原有实物箭头牌（每路口至多一块生效箭头）</h3>
+      <form id="form-board" class="gridform">
+        <select name="node_id" required></select>
+        <select name="points_to" required></select>
+        <button type="submit">登记旧牌</button>
+      </form>
+      <ul id="list-boards" class="plist"></ul>
+    </div>
+
+    <div class="card hidden" id="ops-plan">
+      <h2>② 拟定封路清单与换牌方案</h2>
+
+      <h3>待封通道清单</h3>
+      <form id="form-closure" class="gridform">
+        <select name="corridor_id" required></select>
+        <button type="submit">加入封路清单</button>
+      </form>
+      <ul id="list-closures" class="plist"></ul>
+
+      <h3>换牌方案（待安装的新牌）</h3>
+      <form id="form-item" class="gridform">
+        <select name="node_id" required></select>
+        <select name="points_to" required></select>
+        <button type="submit">加入方案</button>
+      </form>
+      <ul id="list-items" class="plist"></ul>
+
+      <div class="btn-row">
+        <button id="btn-start">确认方案，开始安装（锁定清单与方案）</button>
+      </div>
+    </div>
+
+    <div class="card hidden" id="ops-install">
+      <h2>③ 逐块安装新牌</h2>
+      <p class="hint">每装一块，立即按「全部通道尚未封闭 + 新旧混用的实物牌」
+        从所有入口逐步核对到服务台；遇断路 / 缺牌 / 循环，该块牌回滚不生效。</p>
+      <div id="install-buttons" class="btn-row wrap"></div>
+      <div class="btn-row">
+        <button id="btn-close" class="primary">全部装好，封闭清单中的通道</button>
+      </div>
+    </div>
+
+    <div class="card hidden" id="ops-done">
+      <h2>④ 作业结果</h2>
+      <div id="done-message"></div>
+    </div>
+
+    <div class="card">
+      <h2>作业控制</h2>
+      <div class="btn-row">
+        <button id="btn-reset" class="danger">重置作业（保留登记，清空方案/新牌/封路）</button>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

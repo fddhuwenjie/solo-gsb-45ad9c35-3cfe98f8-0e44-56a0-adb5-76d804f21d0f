@@ -1,0 +1,12 @@
+services:
+  signboard:
+    build: .
+    container_name: pavilion-signboard
+    ports:
+      - "5000:5000"
+    volumes:
+      - signboard-data:/data
+    restart: unless-stopped
+
+volumes:
+  signboard-data:
