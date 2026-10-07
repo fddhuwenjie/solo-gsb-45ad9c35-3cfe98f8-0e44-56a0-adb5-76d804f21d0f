@@ -96,6 +96,14 @@ button:disabled { background: #9aa5b1 !important; cursor: not-allowed; }
 .install-btn { padding: 6px 12px; border: 1px solid #8a4baf; background: #f3e8fb; color: #6b2d8f; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .install-btn.done { background: #e6f6ec; border-color: #2f9e44; color: #24703b; }
 
+.checklist { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
+.checklist li {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-bottom: 1px dashed #e2e7ee;
+}
+.checklist li .grow { flex: 1; }
+.checklist input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+
 .check-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 700px) { .check-row { grid-template-columns: 1fr; } .gridform { grid-template-columns: 1fr; } }
 .check-box { border: 1px solid #dde3ea; border-radius: 8px; padding: 8px 10px; }

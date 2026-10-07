@@ -319,11 +319,63 @@ function renderLists() {
 
   // 完成信息
   const done = $("#done-message");
-  if (state.stage === "closed") {
-    done.innerHTML = `<div class="big-ok">✔ 通道已封闭，所有入口仍可沿实物箭头到达服务台，作业完成。</div>`;
-  } else if (state.stage === "failed") {
+  if (state.stage === "failed") {
     done.innerHTML = `<div class="big-fail">✘ ${escapeHtml(state.stage_error || "封路失败")}</div>
       <p class="hint">已安装的新牌与仍开放的通道均已保留；上方分别展示方案、实物牌与通道状态。可重置后重新规划。</p>`;
+  } else {
+    done.innerHTML = "";
+  }
+}
+
+// ------------------------------------------------------------------ 恢复开放
+function renderReopen() {
+  const closedCorridors = state.corridors.filter((c) => c.status === "closed");
+  const newBoards = [...state.boards]
+    .filter((b) => b.kind === "new")
+    .sort((a, b) => a.node_id - b.node_id);
+  const isLast = closedCorridors.length === 1;
+
+  // 通道下拉
+  const sel = $("#form-reopen [name=corridor_id]");
+  fillSelect(sel, closedCorridors, corridorLabel, true);
+
+  // 已封通道列表（只读提示）
+  const ulc = $("#list-reopen-corridors");
+  ulc.innerHTML = "";
+  for (const c of closedCorridors) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="tag closed">已封闭</span>
+      <span class="grow">${escapeHtml(c.a_name)} ↔ ${escapeHtml(c.b_name)}</span>`;
+    ulc.appendChild(li);
+  }
+  if (!closedCorridors.length) {
+    ulc.innerHTML = `<li><span class="grow" style="color:#8493a5">（没有已封闭通道）</span></li>`;
+  }
+
+  // 可拆新牌（复选框）
+  const ulb = $("#list-reopen-boards");
+  ulb.innerHTML = "";
+  for (const b of newBoards) {
+    const li = document.createElement("li");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = b.id;
+    cb.className = "reopen-board";
+    if (isLast) cb.checked = true;  // 最后一条通道默认全选，且后端强制拆完
+    li.appendChild(cb);
+    li.innerHTML += `<span class="tag new">新牌</span>
+      <span class="grow">${escapeHtml(b.node_name)} → ${escapeHtml(b.points_to_name)}</span>`;
+    ulb.appendChild(li);
+  }
+  if (!newBoards.length) {
+    ulb.innerHTML = `<li><span class="grow" style="color:#8493a5">（没有新牌：全部路口沿用旧牌，直接开放通道即可）</span></li>`;
+  }
+
+  const hint = $("#reopen-last-hint");
+  if (isLast) {
+    hint.textContent = "这是最后一条待恢复通道：提交时必须拆完全部剩余新牌（已默认全选）。走查通过后本次方案清空，回到布展登记。";
+  } else {
+    hint.textContent = `还有 ${closedCorridors.length} 条通道未恢复：本次可只开放通道、不拆牌；恢复最后一条时须拆完全部新牌。`;
   }
 }
 
@@ -336,7 +388,7 @@ function renderStage() {
     setup: "登记路口、通道与原有旧牌；全部入口须已能沿旧牌走到服务台。",
     planning: "勾选待封通道、拟定换牌新牌；方案随时可改，开始安装后锁定。",
     installing: "清单与方案已锁定，只能逐块安装；每次安装后自动全量核对。",
-    closed: "封路完成，导向正常。",
+    closed: "施工结束：在下方逐次选择已封通道与要拆的新牌，核对通过后恢复开放。",
     failed: "封路失败：新牌与开放通道已保留，作业终止。",
   };
   $("#stage-hint").textContent = hints[s];
@@ -344,9 +396,18 @@ function renderStage() {
   $("#ops-setup").classList.toggle("hidden", s !== "setup");
   $("#ops-plan").classList.toggle("hidden", s !== "planning");
   $("#ops-install").classList.toggle("hidden", s !== "installing");
-  $("#ops-done").classList.toggle("hidden", s !== "closed" && s !== "failed");
+  $("#ops-reopen").classList.toggle("hidden", s !== "closed");
+  $("#ops-done").classList.toggle("hidden", s !== "failed");
   $("#btn-seed").disabled = s !== "setup";
   $("#btn-close").disabled = s !== "installing";
+
+  // 已封路阶段：右侧第二块核对面板改为「全部恢复预演」
+  const simTitle = document.querySelector("#sim-box h3");
+  if (s === "closed") {
+    simTitle.textContent = "全部恢复预演（全部通道开放 + 拆完全部新牌）";
+  } else {
+    simTitle.textContent = "封路预演（模拟清单通道封闭）";
+  }
 
   const pending = state.plan_items.filter((p) => !p.installed).length;
   if (s === "installing") {
@@ -399,9 +460,11 @@ async function refresh() {
   renderStage();
   renderForms();
   renderLists();
+  renderReopen();
   renderMap();
   renderCheck("#live-box", state.live_check);
-  renderCheck("#sim-box", state.sim_check);
+  // 已封路阶段第二块面板展示「全部恢复预演」，其余阶段为封路预演
+  renderCheck("#sim-box", state.stage === "closed" ? state.reopen_check : state.sim_check);
 }
 
 // ------------------------------------------------------------------ 事件
@@ -467,6 +530,26 @@ document.addEventListener("DOMContentLoaded", () => {
       refresh();
     } catch (e) { toast(e.message, "error"); }
   };
+
+  $("#form-reopen").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const corridor_id = f.corridor_id.value;
+    if (!corridor_id) { toast("请选择本次要恢复开放的已封通道", "error"); return; }
+    const board_ids = [...f.querySelectorAll(".reopen-board:checked")]
+      .map((cb) => parseInt(cb.value, 10));
+    try {
+      const out = await api("/api/reopen", {
+        method: "POST",
+        body: { corridor_id: parseInt(corridor_id, 10), board_ids },
+      });
+      toast(out.finished
+        ? "✔ 最后一条通道已恢复、新牌已拆完，本次方案清空，回到布展登记"
+        : "✔ 通道已恢复开放、勾选新牌已拆除，核对通过，可继续恢复其余通道",
+        "success");
+    } catch (e) { toast(e.message, "error"); }
+    refresh();
+  });
 
   refresh().catch((e) => toast("加载失败：" + e.message, "error"));
 });

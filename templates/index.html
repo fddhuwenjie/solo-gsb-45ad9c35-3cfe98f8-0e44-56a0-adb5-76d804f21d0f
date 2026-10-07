@@ -115,8 +115,27 @@
       </div>
     </div>
 
+    <div class="card hidden" id="ops-reopen">
+      <h2>④ 施工结束：恢复开放通道 / 拆除新牌</h2>
+      <p class="hint">逐次选择<b>一条已封通道</b>与<b>本次要拆的零块或多块新牌</b>，
+        系统按「该通道开放 + 选中牌拆除（露出旧牌）」后的现场状态，从所有入口重新走查；
+        遇断路 / 缺牌 / 循环会指出首个出错路口，本次开放与拆牌均不生效。成功后仅改动所选内容，刷新后可继续。
+        恢复最后一条通道时必须同时拆完全部剩余新牌，走查通过后本次方案清空、回到布展登记。</p>
+
+      <h3>选择本次恢复的通道（必选一条）</h3>
+      <form id="form-reopen" class="gridform">
+        <select name="corridor_id" required></select>
+        <button type="submit" class="primary">开放通道并拆除勾选新牌</button>
+      </form>
+      <ul id="list-reopen-corridors" class="plist"></ul>
+
+      <h3>勾选本次一并拆除的新牌（可不拆）</h3>
+      <ul id="list-reopen-boards" class="checklist"></ul>
+      <p class="hint" id="reopen-last-hint"></p>
+    </div>
+
     <div class="card hidden" id="ops-done">
-      <h2>④ 作业结果</h2>
+      <h2>作业结果</h2>
       <div id="done-message"></div>
     </div>
 

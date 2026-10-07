@@ -100,24 +100,28 @@ def node_name(db, nid):
     return row["name"] if row else f"#{nid}"
 
 
-def adjacency(db, closed_ids):
-    """构造邻接表；closed_ids 中或已实际封闭的通道视为断路。"""
+def adjacency(db, closed_ids, force_open_ids=()):
+    """构造邻接表；closed_ids 中或已实际封闭的通道视为断路；
+    force_open_ids 中的通道即使状态为 closed 也视为通路（恢复开放模拟用）。"""
     adj = {}
     for r in db.execute("SELECT id, a_id, b_id, status FROM corridor"):
-        if r["id"] in closed_ids or r["status"] == "closed":
+        if r["id"] in force_open_ids:
+            pass  # 强制视为通路
+        elif r["id"] in closed_ids or r["status"] == "closed":
             continue
         adj.setdefault(r["a_id"], []).append(r["b_id"])
         adj.setdefault(r["b_id"], []).append(r["a_id"])
     return adj
 
 
-def effective_arrow(db, node_id):
-    """该路口当前生效的箭头：新牌优先，否则旧牌；无牌返回 None。"""
+def effective_arrow(db, node_id, removed_boards=()):
+    """该路口当前生效的箭头：新牌优先，否则旧牌；无牌返回 None。
+    removed_boards 中的 board id 视为已拆除（仅用于恢复开放时的模拟走查）。"""
     row = db.execute(
-        "SELECT points_to FROM board WHERE node_id=? AND kind='new'",
+        "SELECT id, points_to FROM board WHERE node_id=? AND kind='new'",
         (node_id,),
     ).fetchone()
-    if row:
+    if row and row["id"] not in removed_boards:
         return ("new", row["points_to"])
     row = db.execute(
         "SELECT points_to FROM board WHERE node_id=? AND kind='old'",
@@ -128,15 +132,17 @@ def effective_arrow(db, node_id):
     return None
 
 
-def walk_check(db, closed_ids):
+def walk_check(db, closed_ids, removed_boards=(), force_open_ids=()):
     """
     从所有入口依实物箭头逐步走到服务台。
     closed_ids: 本次检查视为已封闭的通道集合。
+    removed_boards: 本次检查视为已拆除的实物牌 id 集合（拆新牌后露出旧牌）。
+    force_open_ids: 即使状态为 closed 也强制视为通路的通道（恢复开放模拟用）。
     返回 dict: ok / blocked (通道封路状态) / entrances(逐个结果)
     任一入口出错时，error 为首个（按登记顺序）出错入口的首个出错路口。
     """
     nodes = db.execute("SELECT id, kind FROM node ORDER BY id").fetchall()
-    adj = adjacency(db, closed_ids)
+    adj = adjacency(db, closed_ids, force_open_ids)
     blocked = {
         r["id"]: (r["status"] == "closed")
         for r in db.execute("SELECT id, status FROM corridor")
@@ -155,7 +161,7 @@ def walk_check(db, closed_ids):
             if kind == "service":
                 break
             seen.add(cur)
-            arrow = effective_arrow(db, cur)
+            arrow = effective_arrow(db, cur, removed_boards)
             if arrow is None:
                 err = {
                     "type": "missing",
@@ -212,7 +218,7 @@ def lock_error(stage):
         "setup": "尚未进入方案阶段，请先确认初始导向正确后「拟定方案」。",
         "planning": "方案尚未开始安装。",
         "installing": "安装已开始：封路清单与换牌方案已锁定，不能再改动。",
-        "closed": "通道已封闭，作业已结束（可重置后重新规划）。",
+        "closed": "通道已封闭：施工结束后请在「已封路」页面逐次恢复开放。",
         "failed": "封路失败，本次作业已终止：只能查看或重置。",
     }[stage]
 
@@ -283,6 +289,15 @@ def api_state():
     live = walk_check(db, set())  # 现状（按已封闭通道）
     sim = walk_check(db, {c["corridor_id"] for c in closure})  # 模拟封路后
 
+    # 已封路阶段：模拟「全部已封通道开放 + 全部新牌拆除」后的最终恢复状态
+    closed_now = [
+        r["id"] for r in db.execute("SELECT id FROM corridor WHERE status='closed'")
+    ]
+    new_board_ids = {
+        r["id"] for r in db.execute("SELECT id FROM board WHERE kind='new'")
+    }
+    reopen_check = walk_check(db, set(), new_board_ids, set(closed_now))
+
     return jsonify(
         {
             "stage": st["stage"],
@@ -295,6 +310,7 @@ def api_state():
             "effective": eff,
             "live_check": live,
             "sim_check": sim,
+            "reopen_check": reopen_check,
         }
     )
 
@@ -588,6 +604,120 @@ def close_corridors():
     set_stage(db, "closed")
     db.commit()
     return jsonify({"ok": True})
+
+
+@app.route("/api/reopen", methods=["POST"])
+def reopen_corridor():
+    """施工结束后逐次恢复开放：选择一条已封通道 + 本次要拆的零块或多块新牌。
+    按「该通道开放 + 选中新牌拆除」后的状态从所有入口重新走查；
+    出现断路 / 缺牌 / 循环则指出首个出错路口，本次开放与拆牌均不生效。
+    成功后仅更新所选通道、被拆实物牌及其封路清单/换牌方案记录。
+    恢复最后一条已封通道时必须同时拆完剩余新牌；走查通过后清空本次方案，
+    回到布展登记阶段（展厅、通道与旧牌保留，通道全部开放）。"""
+    db = get_db()
+    st = get_stage(db)
+    if st["stage"] != "closed":
+        return bad(lock_error(st["stage"]), 409)
+    d = request.get_json(force=True) or {}
+    try:
+        corridor_id = int(d.get("corridor_id"))
+    except (TypeError, ValueError):
+        return bad("请选择本次要恢复开放的已封通道")
+    corr = db.execute(
+        "SELECT * FROM corridor WHERE id=?", (corridor_id,)
+    ).fetchone()
+    if not corr:
+        return bad("通道不存在")
+    if corr["status"] != "closed":
+        return bad("只能恢复已封闭的通道")
+
+    raw_boards = d.get("board_ids", [])
+    if not isinstance(raw_boards, list):
+        return bad("board_ids 必须是数组（可为空）")
+    try:
+        board_ids = [int(b) for b in raw_boards]
+    except (TypeError, ValueError):
+        return bad("拆除牌编号不合法")
+    if len(set(board_ids)) != len(board_ids):
+        return bad("拆除清单中有重复的牌")
+
+    removed = set()
+    for bid in board_ids:
+        b = db.execute(
+            "SELECT id, node_id, points_to FROM board WHERE id=? AND kind='new'",
+            (bid,),
+        ).fetchone()
+        if not b:
+            return bad(f"编号 {bid} 不是可拆除的已装新牌")
+        removed.add(b["id"])
+
+    other_closed = [
+        r["id"]
+        for r in db.execute("SELECT id FROM corridor WHERE status='closed'")
+        if r["id"] != corridor_id
+    ]
+    all_new_ids = {
+        r["id"] for r in db.execute("SELECT id FROM board WHERE kind='new'")
+    }
+    # 恢复最后一条已封通道时，必须同时拆完全部剩余新牌
+    if not other_closed and all_new_ids - removed:
+        return bad("这是最后一条待恢复通道，必须同时拆除全部剩余新牌")
+
+    # 模拟：本次通道强制开放，其余已封通道仍视为断路；选中新牌视为已拆。
+    still_closed = set(other_closed)
+    chk = walk_check(db, still_closed, removed, force_open_ids={corridor_id})
+    if not chk["ok"]:
+        e = chk["error"]
+        return jsonify({
+            "ok": False,
+            "rejected": True,
+            "error": e,
+            "message": f"恢复不生效：{e['detail']}（路径："
+                       + " → ".join(node_name(db, x) for x in e["trail"]) + "）",
+        }), 422
+
+    # ---- 走查通过：落地本次开放与拆牌 ----
+    # 拆牌前先收集 (node_id, points_to)，用于同步删除换牌方案记录
+    removed_items = []
+    for bid in removed:
+        b = db.execute(
+            "SELECT node_id, points_to FROM board WHERE id=?", (bid,)
+        ).fetchone()
+        removed_items.append((b["node_id"], b["points_to"]))
+
+    db.execute("UPDATE corridor SET status='open' WHERE id=?", (corridor_id,))
+    if removed:
+        db.executemany(
+            "DELETE FROM board WHERE id=? AND kind='new'",
+            [(bid,) for bid in removed],
+        )
+        # 同步删除对应的换牌方案记录
+        db.executemany(
+            "DELETE FROM plan_item WHERE node_id=? AND points_to=?",
+            removed_items,
+        )
+    db.execute("DELETE FROM closure_plan WHERE corridor_id=?", (corridor_id,))
+
+    remaining_closed = db.execute(
+        "SELECT COUNT(*) c FROM corridor WHERE status='closed'"
+    ).fetchone()["c"]
+    remaining_new = db.execute(
+        "SELECT COUNT(*) c FROM board WHERE kind='new'"
+    ).fetchone()["c"]
+
+    finished = remaining_closed == 0
+    if finished:
+        if remaining_new:
+            # 不应发生：最后一条通道的拆牌约束在下方校验，此处兜底回滚
+            db.rollback()
+            return bad("恢复最后一条通道时必须同时拆完剩余新牌")
+        # 全部恢复：清空本次方案（plan_item / closure_plan 已随操作清空，
+        # 此处幂等兜底），回到布展登记；展厅、通道、旧牌保留。
+        db.execute("DELETE FROM plan_item")
+        db.execute("DELETE FROM closure_plan")
+        set_stage(db, "setup")
+    db.commit()
+    return jsonify({"ok": True, "finished": finished})
 
 
 @app.route("/api/reset", methods=["POST"])

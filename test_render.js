@@ -54,7 +54,7 @@ const code = fs.readFileSync("static/app.js", "utf8");
 const patched = code.replace(
   /document\.addEventListener\("DOMContentLoaded"[\s\S]*?\}\);\s*$/,
   ""
-) + "\nglobalThis.__api = { renderStage, renderForms, renderLists, renderMap, renderCheck, set state(v){state=v}, get state(){return state} };";
+) + "\nglobalThis.__api = { renderStage, renderForms, renderLists, renderMap, renderCheck, renderReopen, set state(v){state=v}, get state(){return state} };";
 const runGlobal = (0, eval);
 runGlobal(patched);
 const R = globalThis.__api;
@@ -101,6 +101,9 @@ function makeState(stage) {
     sim_check: { ok: true, error: null, entrances: [
       { entrance_id: 1, entrance_name: "入口1", ok: true, path: ["入口1", "A展厅", "C展厅"] },
     ] },
+    reopen_check: { ok: true, error: null, entrances: [
+      { entrance_id: 1, entrance_name: "入口1", ok: true, path: ["入口1", "A展厅", "B展厅", "C展厅"] },
+    ] },
   };
 }
 
@@ -111,14 +114,23 @@ for (const stage of ["setup", "planning", "installing", "closed", "failed"]) {
     R.renderStage();
     R.renderForms();
     R.renderLists();
+    R.renderReopen();
     R.renderMap();
     R.renderCheck("#live-box", R.state.live_check);
     R.renderCheck("#sim-box", R.state.sim_check);
-    ok(true, "五个渲染函数无异常");
+    ok(true, "六个渲染函数无异常");
     // 只有安装阶段显示安装面板
     const installCard = document.querySelector("#ops-install");
     ok(installCard.classList.contains("hidden") === (stage !== "installing"),
       "安装面板显隐正确");
+    // 恢复面板只在已封路阶段显示
+    const reopenCard = document.querySelector("#ops-reopen");
+    ok(reopenCard.classList.contains("hidden") === (stage !== "closed"),
+      "恢复面板显隐正确");
+    // 作业结果面板只在封路失败时显示
+    const doneCard = document.querySelector("#ops-done");
+    ok(doneCard.classList.contains("hidden") === (stage !== "failed"),
+      "结果面板仅失败阶段显示");
     // 封路按钮只在安装阶段可点
     ok(document.querySelector("#btn-close").disabled === (stage !== "installing"),
       "封路按钮可用性正确");
@@ -152,9 +164,10 @@ console.log("== 空状态 ==");
 R.state = { stage: "setup", stage_error: null, nodes: [], corridors: [], boards: [],
   closure_plan: [], plan_items: [], effective: {},
   live_check: { ok: true, error: null, entrances: [] },
-  sim_check: { ok: true, error: null, entrances: [] } };
+  sim_check: { ok: true, error: null, entrances: [] },
+  reopen_check: { ok: true, error: null, entrances: [] } };
 try {
-  R.renderStage(); R.renderForms(); R.renderLists(); R.renderMap();
+  R.renderStage(); R.renderForms(); R.renderLists(); R.renderReopen(); R.renderMap();
   R.renderCheck("#live-box", R.state.live_check); R.renderCheck("#sim-box", R.state.sim_check);
   ok(true, "空数据渲染无异常");
 } catch (e) {
